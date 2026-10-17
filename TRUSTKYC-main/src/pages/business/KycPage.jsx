@@ -1,0 +1,832 @@
+import { createPortal } from "react-dom";
+import { useEffect, useRef, useState, useCallback } from "react";
+import {
+  Upload,
+  FileText,
+  Download,
+  Eye,
+  RotateCcw,
+  X,
+  CheckCircle2,
+  AlertTriangle,
+  Loader2,
+  ShieldCheck,
+  ScanLine,
+  RefreshCw,
+  CircleAlert,
+  Check,
+  CloudUpload,
+  Info,
+  FileWarning,
+  CloudSync,
+  Plus,
+  Search,
+  FileSpreadsheet,
+} from "lucide-react";
+
+import { Card, StatusBadge } from "@/components/ui-kit";
+import { EmptyState } from "@/components/ui-bits";
+import { toast } from "sonner";
+import { getDocuments, addDocument } from "@/utils/storage";
+import DocumentPreviewModal from "./DocumentPreviewModal";
+
+const tabs = ["All", "GST", "PAN", "INCORPORATION", "BANK"];
+
+const tabsMapping = {
+  GST: "GST_CERTIFICATE",
+  PAN: "PAN_CARD",
+  INCORPORATION: "INCORPORATION_CERTIFICATE",
+  BANK: "BANK_PROOF",
+};
+
+const inverseTabsMapping = {
+  GST_CERTIFICATE: "GST Certificate",
+  PAN_CARD: "PAN Card",
+  INCORPORATION_CERTIFICATE: "Incorporation Certificate",
+  BANK_PROOF: "Bank Proof",
+};
+
+const docTypeOptions = ["GST Certificate", "PAN Card", "Incorporation Certificate", "Bank Proof"];
+
+const MAX_BYTES = 10 * 1024 * 1024;
+const ACCEPTED_MIME = ["application/pdf", "image/png", "image/jpeg", "image/jpg"];
+const ACCEPTED_EXT = [".pdf", ".png", ".jpg", ".jpeg"];
+
+const validators = {
+  "GST Certificate": {
+    field: "gstNumber",
+    regex: /^[0-9]{2}[A-Z]{5}[0-9]{4}[A-Z]{1}[1-9A-Z]{1}Z[0-9A-Z]{1}$/,
+    example: "27AAACH1234A1Z9",
+  },
+  "PAN Card": {
+    field: "panNumber",
+    regex: /^[A-Z]{5}[0-9]{4}[A-Z]$/,
+    example: "AAACH1234A",
+  },
+  "Incorporation Certificate": {
+    field: "cinNumber",
+    regex: /^[A-Z][0-9]{5}[A-Z]{2}[0-9]{4}[A-Z]{3}[0-9]{6}$/,
+    example: "U74999MH2018PLC312841",
+  },
+  "Bank Proof": {
+    field: "ifscCode",
+    regex: /^[A-Z]{4}0[A-Z0-9]{6}$/,
+    example: "HDFC0001234",
+  },
+};
+
+function bytesToHuman(b) {
+  if (!b && b !== 0) return "—";
+  if (typeof b === "string") return b;
+  if (b < 1024) return `${b} B`;
+  if (b < 1024 * 1024) return `${(b / 1024).toFixed(1)} KB`;
+  return `${(b / 1024 / 1024).toFixed(2)} MB`;
+}
+
+export default function KYCPage() {
+  const [tab, setTab] = useState("All");
+  const [search, setSearch] = useState("");
+  const [uploadOpen, setUploadOpen] = useState(false);
+  const [docType, setDocType] = useState("GST Certificate");
+  const [kycDocuments, setKycDocuments] = useState([]);
+  const [fetching, setFetching] = useState(false);
+
+  const getKYCDocuments = useCallback(() => {
+    setFetching(true);
+    const docs = getDocuments();
+    setKycDocuments(docs);
+    setFetching(false);
+  }, []);
+
+  useEffect(() => {
+    getKYCDocuments();
+    const handleUpdate = () => getKYCDocuments();
+    window.addEventListener("trustkyc:data_update", handleUpdate);
+    return () => window.removeEventListener("trustkyc:data_update", handleUpdate);
+  }, [getKYCDocuments]);
+
+  const filtered = (kycDocuments || []).filter((d) => {
+    const targetKey = tabsMapping[tab];
+    const matchesTab =
+      tab === "All"
+        ? true
+        : d.type === targetKey ||
+          d.documentType === targetKey ||
+          d.documentType === inverseTabsMapping[targetKey] ||
+          (d.type && d.type.toUpperCase().includes(tab)) ||
+          (d.documentType && d.documentType.toUpperCase().includes(tab));
+
+    const fileName = d.fileName || d.name || "";
+    const docTypeName = d.documentType || d.type || "";
+    const matchesSearch = search.trim()
+      ? fileName.toLowerCase().includes(search.toLowerCase()) ||
+        docTypeName.toLowerCase().includes(search.toLowerCase())
+      : true;
+    return matchesTab && matchesSearch;
+  });
+
+  const expiring =
+    kycDocuments?.filter((d) => {
+      if (!d || !d.expiresAt) return false;
+      const days = (new Date(d.expiresAt).getTime() - Date.now()) / 86400000;
+      return days < 60 && days > 0;
+    }) || [];
+
+  const handleReuploadAction = (backendType) => {
+    const matchedType =
+      inverseTabsMapping[backendType] ||
+      (docTypeOptions.includes(backendType) ? backendType : "GST Certificate");
+    setDocType(matchedType);
+    setUploadOpen(true);
+  };
+
+  // Statutory KYC Pillars Calculation
+  const pillars = [
+    {
+      id: "GST_CERTIFICATE",
+      name: "GST Registration",
+      docName: "GST Certificate",
+      tabKey: "GST",
+      doc: kycDocuments.find(
+        (d) => d.type === "GST_CERTIFICATE" || d.documentType === "GST Certificate",
+      ),
+    },
+    {
+      id: "PAN_CARD",
+      name: "Corporate PAN",
+      docName: "PAN Card",
+      tabKey: "PAN",
+      doc: kycDocuments.find((d) => d.type === "PAN_CARD" || d.documentType === "PAN Card"),
+    },
+    {
+      id: "INCORPORATION_CERTIFICATE",
+      name: "Certificate of Inc.",
+      docName: "Incorporation Certificate",
+      tabKey: "INCORPORATION",
+      doc: kycDocuments.find(
+        (d) =>
+          d.type === "INCORPORATION_CERTIFICATE" || d.documentType === "Incorporation Certificate",
+      ),
+    },
+    {
+      id: "BANK_PROOF",
+      name: "Bank Verification",
+      docName: "Bank Proof",
+      tabKey: "BANK",
+      doc: kycDocuments.find((d) => d.type === "BANK_PROOF" || d.documentType === "Bank Proof"),
+    },
+  ];
+
+  const verifiedCount = pillars.filter((p) => p.doc && p.doc.status === "verified").length;
+  const kycPercent = Math.round((verifiedCount / pillars.length) * 100);
+
+  return (
+    <>
+      <div className="space-y-6">
+        {/* KYC Compliance Status & Four Pillars Checklist */}
+        <div className="rounded-xl border border-border bg-card p-5 sm:p-6 shadow-[0_1px_3px_rgba(0,0,0,0.04)] space-y-5">
+          <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+            <div className="flex items-center gap-3.5">
+              <div className="size-12 rounded-xl bg-[#DDF8FC] border border-[#BAEDF7] flex items-center justify-center shrink-0 text-[#007B83] shadow-2xs">
+                <ShieldCheck className="size-6" />
+              </div>
+              <div>
+                <div className="flex items-center gap-2.5">
+                  <h2 className="text-base sm:text-[18px] font-bold text-foreground">
+                    Statutory KYC Verification Docket
+                  </h2>
+                  <span
+                    className={`text-[11px] font-semibold px-2.5 py-0.5 rounded-full border ${
+                      verifiedCount === 4
+                        ? "bg-[#DDF8E8] text-[#1E824C] border-[#C2EED4]"
+                        : "bg-[#FFF1C7] text-[#B45309] border-[#FCE19C]"
+                    }`}
+                  >
+                    {verifiedCount === 4
+                      ? "Level 3 Fully Verified"
+                      : `${verifiedCount}/4 Pillars Verified`}
+                  </span>
+                </div>
+                <p className="text-[12px] text-muted-foreground mt-0.5">
+                  Deposit official regulatory certifications for automated AI OCR extraction and
+                  sovereign verification.
+                </p>
+              </div>
+            </div>
+
+            <div className="flex items-center gap-3">
+              <div className="text-right">
+                <p className="text-[10px] uppercase font-bold text-muted-foreground tracking-wider">
+                  KYC Readiness
+                </p>
+                <p className="text-sm font-bold font-mono text-foreground">
+                  {kycPercent}% Complete
+                </p>
+              </div>
+              <div className="w-24 h-2 rounded-full bg-[#F1F3F6] dark:bg-muted overflow-hidden border border-border">
+                <div
+                  className="h-full bg-primary transition-all duration-500 rounded-full"
+                  style={{ width: `${kycPercent}%` }}
+                />
+              </div>
+            </div>
+          </div>
+
+          {/* 4 Pillars Card Grid */}
+          <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3 pt-2">
+            {pillars.map((pillar) => {
+              const doc = pillar.doc;
+              const status = doc?.status || "missing";
+
+              return (
+                <div
+                  key={pillar.id}
+                  onClick={() => {
+                    if (doc) {
+                      setTab(pillar.tabKey);
+                    } else {
+                      setDocType(pillar.docName);
+                      setUploadOpen(true);
+                    }
+                  }}
+                  className="p-3.5 rounded-lg border border-border bg-[#F7F8FA] dark:bg-muted/20 hover:bg-[#F1F5FD] dark:hover:bg-muted/40 transition-all cursor-pointer group flex flex-col justify-between"
+                >
+                  <div className="flex items-start justify-between gap-2 mb-2">
+                    <span className="text-[13px] font-bold text-foreground group-hover:text-primary transition-colors">
+                      {pillar.name}
+                    </span>
+                    {status === "verified" ? (
+                      <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-[#1E824C] dark:text-emerald-400 bg-[#DDF8E8] dark:bg-emerald-950/40 px-2 py-0.5 rounded-md border border-[#C2EED4] dark:border-emerald-800/60">
+                        <CheckCircle2 className="size-3" /> Verified
+                      </span>
+                    ) : status === "pending" ? (
+                      <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-[#B45309] dark:text-amber-400 bg-[#FFF1C7] dark:bg-amber-950/40 px-2 py-0.5 rounded-md border border-[#FCE19C] dark:border-amber-800/60">
+                        <Loader2 className="size-3 animate-spin" /> In Review
+                      </span>
+                    ) : status === "rejected" ? (
+                      <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-[#D32F2F] dark:text-rose-400 bg-[#FCE4E4] dark:bg-rose-950/40 px-2 py-0.5 rounded-md border border-[#F9C3C3] dark:border-rose-800/60">
+                        <AlertTriangle className="size-3" /> Rejected
+                      </span>
+                    ) : (
+                      <span className="inline-flex items-center gap-1 text-[10px] font-semibold text-[#5A6472] dark:text-slate-400 bg-[#F1F3F6] dark:bg-slate-800 px-2 py-0.5 rounded-md border border-[#E8EBEF] dark:border-slate-700">
+                        <Plus className="size-3" /> Required
+                      </span>
+                    )}
+                  </div>
+                  <div className="flex items-center justify-between text-[11px] text-muted-foreground font-mono">
+                    <span className="truncate max-w-[130px]">
+                      {doc ? doc.name || doc.fileName || "Uploaded" : "Not Deposited"}
+                    </span>
+                    <span className="text-primary font-sans font-medium text-[10px] underline">
+                      {doc ? "View" : "Upload"}
+                    </span>
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        </div>
+
+        {/* Top Control Bar */}
+        <div className="rounded-xl border border-border bg-card p-3.5 sm:p-4 shadow-[0_1px_3px_rgba(0,0,0,0.04)] flex flex-col md:flex-row md:items-center justify-between gap-4">
+          {/* Tabs */}
+          <div className="flex gap-1.5 overflow-x-auto pb-1 md:pb-0">
+            {tabs.map((t) => (
+              <button
+                key={t}
+                onClick={() => setTab(t)}
+                className={`px-3.5 py-1.5 rounded-lg text-xs font-semibold transition cursor-pointer shrink-0 ${
+                  tab === t
+                    ? "bg-[#4285F4] text-white shadow-xs"
+                    : "text-muted-foreground hover:text-foreground hover:bg-[#F1F5FD] dark:hover:bg-muted"
+                }`}
+              >
+                {t}
+              </button>
+            ))}
+          </div>
+
+          {/* Search & Actions */}
+          <div className="flex items-center gap-2.5">
+            <div className="relative flex-1 md:w-56">
+              <Search className="absolute left-3 top-1/2 -translate-y-1/2 size-3.5 text-muted-foreground" />
+              <input
+                type="text"
+                placeholder="Search documents…"
+                value={search}
+                onChange={(e) => setSearch(e.target.value)}
+                className="h-10 text-[13px] pl-9 pr-3 w-full rounded-lg border border-border bg-[#F7F8FA] dark:bg-muted/40 focus:bg-card focus:border-primary focus:ring-2 focus:ring-primary/20 text-foreground transition-all"
+              />
+            </div>
+
+            <button
+              onClick={getKYCDocuments}
+              disabled={fetching}
+              title="Refresh repository"
+              className="size-10 rounded-lg border border-border bg-card hover:bg-muted flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors cursor-pointer shrink-0 shadow-2xs"
+            >
+              <RefreshCw className={`size-4 ${fetching ? "animate-spin text-primary" : ""}`} />
+            </button>
+
+            <button
+              onClick={() => {
+                setDocType("GST Certificate");
+                setUploadOpen(true);
+              }}
+              className="btn-primary text-xs font-semibold h-10 px-4 rounded-lg shadow-xs shrink-0 inline-flex items-center gap-1.5 cursor-pointer"
+            >
+              <Plus className="size-4" />
+              <span>Upload Document</span>
+            </button>
+          </div>
+        </div>
+
+        {/* Expiring Banner */}
+        {expiring.length > 0 && (
+          <div className="rounded-xl border border-amber-500/20 bg-amber-500/10 p-4 flex items-center gap-3 text-amber-700 dark:text-amber-400">
+            <AlertTriangle className="size-5 text-amber-500 shrink-0" />
+            <div className="text-xs">
+              <span className="font-bold">
+                {expiring.length} compliance document{expiring.length > 1 ? "s" : ""}
+              </span>{" "}
+              expiring within 60 days. Re-upload updated credentials to prevent trust score
+              degradation.
+            </div>
+          </div>
+        )}
+
+        {/* Document Table Card */}
+        <div className="rounded-xl border border-border bg-card shadow-[0_1px_3px_rgba(0,0,0,0.04)] overflow-hidden">
+          {filtered.length === 0 ? (
+            <div className="py-16">
+              <EmptyState
+                icon={FileText}
+                title="No compliance documents found"
+                description={
+                  search
+                    ? "No documents match your active search criteria."
+                    : "No documents recorded under this category yet."
+                }
+                action={
+                  <button
+                    onClick={() => {
+                      setDocType(
+                        tab !== "All" && inverseTabsMapping[tabsMapping[tab]]
+                          ? inverseTabsMapping[tabsMapping[tab]]
+                          : "GST Certificate",
+                      );
+                      setUploadOpen(true);
+                    }}
+                    className="btn-primary text-xs font-semibold py-2 px-4 rounded-lg shadow-sm cursor-pointer"
+                  >
+                    <Plus className="size-3.5 mr-1" /> Upload Document
+                  </button>
+                }
+              />
+            </div>
+          ) : (
+            <div className="overflow-x-auto">
+              <table className="w-full text-xs min-w-[700px]">
+                <thead className="bg-[#F7F8FA] dark:bg-muted/40 text-[11px] uppercase tracking-wider text-muted-foreground border-b border-border font-semibold h-11">
+                  <tr>
+                    <th className="text-left px-5 py-3.5">Document Artifact</th>
+                    <th className="text-left px-4 py-3.5">Uploaded</th>
+                    <th className="text-left px-4 py-3.5">Validity / Expiry</th>
+                    <th className="text-left px-4 py-3.5">Status</th>
+                    <th className="text-left px-4 py-3.5">File Size</th>
+                    <th className="text-right px-5 py-3.5">Actions</th>
+                  </tr>
+                </thead>
+
+                <tbody className="divide-y divide-border">
+                  {filtered.map((d, index) => (
+                    <DocRow
+                      key={d?._id || d?.id || index}
+                      d={d}
+                      onReupload={handleReuploadAction}
+                    />
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {uploadOpen && (
+        <UploadModal
+          onClose={() => {
+            setUploadOpen(false);
+            getKYCDocuments();
+          }}
+          docType={docType}
+          setDocType={setDocType}
+        />
+      )}
+    </>
+  );
+}
+
+function DocRow({ d, onReupload }) {
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const [previewData, setPreviewData] = useState(null);
+  const [downloading, setDownloading] = useState(false);
+
+  if (!d) return null;
+
+  const docTitle = d.fileName || d.name || "Compliance Document";
+  const docTypeLabel =
+    d.documentType ||
+    inverseTabsMapping[d.type] ||
+    (d.type ? d.type.replace(/_/g, " ") : "KYC Artifact");
+
+  const handleView = () => {
+    setPreviewData({
+      ...d,
+      fileName: docTitle,
+      documentType: docTypeLabel,
+      metaData: d.extractedData || d.metaData || {},
+      previewUrl: d.fileUrl || "/sample-doc.pdf",
+    });
+    setPreviewOpen(true);
+  };
+
+  const handleDownload = () => {
+    setDownloading(true);
+    toast.success(`Exporting ${docTitle}`, {
+      description: "Generated verifiable PDF checksum seal.",
+    });
+    setTimeout(() => {
+      setDownloading(false);
+      window.open(d.fileUrl || "/sample-doc.pdf", "_blank");
+    }, 400);
+  };
+
+  return (
+    <>
+      <tr className="hover:bg-[#F7F8FA]/60 dark:hover:bg-muted/30 transition-colors group">
+        <td className="px-5 py-3.5">
+          <div className="flex items-center gap-3">
+            <div className="size-9 rounded-lg bg-[#DDF8FC] text-[#007B83] border border-[#BAEDF7] flex items-center justify-center shrink-0">
+              <FileText className="size-4" />
+            </div>
+            <div className="min-w-0">
+              <p className="font-semibold text-foreground text-xs truncate max-w-xs">{docTitle}</p>
+              <p className="text-[10px] text-muted-foreground font-mono mt-0.5">{docTypeLabel}</p>
+            </div>
+          </div>
+        </td>
+        <td className="px-4 py-3.5 text-xs font-mono text-muted-foreground">
+          {d.uploadedAt || d.createdAt
+            ? new Date(d.uploadedAt || d.createdAt).toLocaleDateString()
+            : "—"}
+        </td>
+        <td className="px-4 py-3.5 text-xs font-mono text-muted-foreground">
+          {d.expiresAt ? new Date(d.expiresAt).toLocaleDateString() : "No Expiry"}
+        </td>
+        <td className="px-4 py-3.5">
+          <StatusBadge status={d.status || "PENDING"} />
+        </td>
+        <td className="px-4 py-3.5 text-xs font-mono text-muted-foreground">
+          {d.size || d.fileSize ? bytesToHuman(d.size || d.fileSize) : "—"}
+        </td>
+        <td className="px-5 py-3.5 text-right">
+          <div className="flex items-center justify-end gap-1">
+            <button
+              onClick={handleView}
+              title="Inspect Document & OCR Data"
+              className="size-8 rounded-lg border border-border bg-card hover:bg-muted text-muted-foreground hover:text-foreground flex items-center justify-center transition-colors cursor-pointer"
+            >
+              <Eye className="size-3.5" />
+            </button>
+            <button
+              onClick={handleDownload}
+              disabled={downloading}
+              title="Download Artifact"
+              className="size-8 rounded-lg border border-border bg-card hover:bg-muted text-muted-foreground hover:text-foreground flex items-center justify-center transition-colors cursor-pointer disabled:opacity-50"
+            >
+              {downloading ? (
+                <Loader2 className="size-3.5 animate-spin text-primary" />
+              ) : (
+                <Download className="size-3.5" />
+              )}
+            </button>
+            <button
+              onClick={() => onReupload(d.documentType || d.type)}
+              title="Re-upload or Update Version"
+              className="size-8 rounded-lg border border-border bg-card hover:bg-muted text-muted-foreground hover:text-foreground flex items-center justify-center transition-colors cursor-pointer"
+            >
+              <CloudSync className="size-3.5" />
+            </button>
+          </div>
+        </td>
+      </tr>
+
+      {previewOpen &&
+        createPortal(
+          <DocumentPreviewModal
+            open={previewOpen}
+            onClose={() => setPreviewOpen(false)}
+            data={previewData}
+          />,
+          document.body,
+        )}
+    </>
+  );
+}
+
+function UploadModal({ onClose, docType, setDocType }) {
+  const [selectedFile, setSelectedFile] = useState(null);
+  const [loading, setLoading] = useState(false);
+  const [uploadedDoc, setUploadedDoc] = useState(null);
+
+  const [documentData, setDocumentData] = useState({
+    gstNumber: "",
+    legalName: "",
+    tradeName: "",
+    address: "",
+    pincode: "",
+  });
+
+  const fileInputRef = useRef(null);
+
+  const handleFileChange = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    const isValid =
+      ACCEPTED_MIME.includes(file.type) ||
+      ACCEPTED_EXT.some((ext) => file.name.toLowerCase().endsWith(ext));
+
+    if (!isValid) {
+      toast.error("Invalid file format", {
+        description: "Please provide a PDF, PNG, or JPG document.",
+      });
+      return;
+    }
+
+    if (file.size > MAX_BYTES) {
+      toast.error(`File too large`, {
+        description: `Maximum allowed is ${bytesToHuman(MAX_BYTES)}`,
+      });
+      return;
+    }
+
+    setSelectedFile(file);
+  };
+
+  const handleUpload = async () => {
+    if (!selectedFile) {
+      toast.error("Please select a document first");
+      return;
+    }
+
+    try {
+      setLoading(true);
+      await new Promise((r) => setTimeout(r, 600));
+
+      let mockMeta = {};
+      if (docType === "GST Certificate") {
+        mockMeta = {
+          gstNumber: "27AAACH1234A1Z9",
+          legalName: "Helios Trade Networks Pvt Ltd",
+          tradeName: "Helios Trade Networks",
+          address: "BKC, Bandra East, Mumbai, Maharashtra",
+          pincode: "400051",
+        };
+      } else if (docType === "PAN Card") {
+        mockMeta = {
+          panNumber: "AAACH1234A",
+          legalName: "HELIOS TRADE NETWORKS PRIVATE LIMITED",
+          entityType: "Company",
+        };
+      } else if (docType === "Incorporation Certificate") {
+        mockMeta = {
+          cinNumber: "U74999MH2018PLC312841",
+          legalName: "Helios Trade Networks Pvt Ltd",
+          rocOffice: "ROC Mumbai",
+        };
+      } else {
+        mockMeta = {
+          bankName: "HDFC Bank Ltd",
+          accountNumber: "••••••••4902",
+          ifscCode: "HDFC0000060",
+        };
+      }
+
+      setUploadedDoc({ temporaryUploadId: `tmp-${Date.now()}` });
+      setDocumentData(mockMeta);
+      toast.success("Extraction completed. Please confirm parameters.");
+    } catch {
+      toast.error("Document upload failed");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleConfirm = async () => {
+    try {
+      setLoading(true);
+      await new Promise((r) => setTimeout(r, 400));
+
+      addDocument({
+        name: selectedFile?.name || `${docType.replace(/\s+/g, "_")}.pdf`,
+        fileName: selectedFile?.name || `${docType.replace(/\s+/g, "_")}.pdf`,
+        type: tabsMapping[docType] || "GST_CERTIFICATE",
+        documentType: docType,
+        extractedData: documentData,
+        metaData: documentData,
+        size: selectedFile?.size
+          ? `${(selectedFile.size / (1024 * 1024)).toFixed(1)} MB`
+          : "1.9 MB",
+        status: "pending",
+        businessName: "Helios Trade Networks Pvt Ltd",
+        businessId: "biz-001",
+        uploadedAt: new Date().toISOString(),
+      });
+
+      toast.success("Document submitted into verification docket");
+      onClose();
+    } catch {
+      toast.error("Confirmation failed");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const reset = () => {
+    setUploadedDoc(null);
+    setDocumentData({
+      gstNumber: "",
+      legalName: "",
+      tradeName: "",
+      address: "",
+      pincode: "",
+    });
+    setSelectedFile(null);
+  };
+
+  const renderFormFields = () => {
+    return Object.keys(documentData || {}).length > 0 ? (
+      <div className="space-y-3.5">
+        {Object.entries(documentData).map(([key, value]) => {
+          if (typeof value === "object" && value !== null) return null;
+
+          return (
+            <div key={key}>
+              <label className="block text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-1">
+                {key.replace(/([A-Z])/g, " $1").replace(/^./, (s) => s.toUpperCase())}
+              </label>
+
+              {key === "address" ? (
+                <textarea
+                  rows={2}
+                  value={value || ""}
+                  onChange={(e) => setDocumentData((prev) => ({ ...prev, [key]: e.target.value }))}
+                  className="form-input text-xs w-full resize-none font-mono"
+                />
+              ) : (
+                <input
+                  type="text"
+                  value={value || ""}
+                  onChange={(e) => setDocumentData((prev) => ({ ...prev, [key]: e.target.value }))}
+                  className="form-input text-xs w-full font-mono"
+                />
+              )}
+            </div>
+          );
+        })}
+      </div>
+    ) : (
+      <p className="text-xs text-muted-foreground">No schema metadata extracted.</p>
+    );
+  };
+
+  return createPortal(
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-[#263445]/40 backdrop-blur-xs p-4 animate-in fade-in duration-200">
+      <div className="w-full max-w-lg p-6 space-y-5 max-h-[90vh] overflow-y-auto bg-card text-foreground rounded-xl shadow-2xl border border-border">
+        <div className="flex justify-between items-center pb-3 border-b border-border">
+          <div>
+            <h3 className="font-bold text-[17px] text-foreground">
+              Deposit Compliance Document
+            </h3>
+            <p className="text-[12px] text-muted-foreground mt-0.5">
+              Upload official paperwork for automated OCR & verification
+            </p>
+          </div>
+          <button
+            onClick={onClose}
+            className="size-8 rounded-lg hover:bg-muted flex items-center justify-center text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+          >
+            <X className="size-4" />
+          </button>
+        </div>
+
+        {!uploadedDoc && (
+          <div className="space-y-4">
+            <div>
+              <label className="block text-xs font-semibold uppercase tracking-wider text-muted-foreground mb-1.5">
+                Compliance Document Classification
+              </label>
+              <select
+                value={docType}
+                onChange={(e) => setDocType(e.target.value)}
+                className="form-input text-xs w-full cursor-pointer rounded-lg"
+              >
+                {docTypeOptions.map((opt) => (
+                  <option key={opt}>{opt}</option>
+                ))}
+              </select>
+            </div>
+
+            <div
+              onClick={() => fileInputRef.current?.click()}
+              className="border-2 border-dashed border-border hover:border-primary/50 hover:bg-[#F1F5FD]/40 dark:hover:bg-muted/30 p-8 text-center flex flex-col items-center justify-center cursor-pointer rounded-xl transition-all group"
+            >
+              <div className="size-12 rounded-xl bg-[#F7F8FA] dark:bg-muted group-hover:bg-[#DDF8FC] group-hover:text-[#007B83] border border-border flex items-center justify-center mb-2 text-muted-foreground transition-colors">
+                <CloudUpload className="size-6" />
+              </div>
+
+              {!selectedFile ? (
+                <>
+                  <p className="text-xs font-semibold text-foreground">Click to browse file</p>
+                  <p className="text-[11px] text-muted-foreground mt-0.5">
+                    PDF, PNG, JPG up to 10 MB
+                  </p>
+                </>
+              ) : (
+                <div className="mt-1 flex items-center gap-1.5 text-xs font-semibold text-primary font-mono">
+                  <Check className="size-3.5" />
+                  <span>{selectedFile.name}</span>
+                </div>
+              )}
+
+              <input
+                type="file"
+                ref={fileInputRef}
+                hidden
+                accept={ACCEPTED_EXT.join(",")}
+                onChange={handleFileChange}
+              />
+            </div>
+
+            <div className="flex justify-end gap-2.5 pt-2 border-t border-border">
+              <button onClick={onClose} className="btn-secondary text-xs font-semibold px-4 py-2 rounded-lg">
+                Cancel
+              </button>
+              <button
+                onClick={handleUpload}
+                disabled={loading || !selectedFile}
+                className="btn-primary text-xs font-semibold px-5 py-2 rounded-lg shadow-xs disabled:opacity-50"
+              >
+                {loading ? (
+                  <>
+                    <Loader2 className="size-3.5 animate-spin mr-1.5 inline" /> Extracting…
+                  </>
+                ) : (
+                  "Upload & Analyze"
+                )}
+              </button>
+            </div>
+          </div>
+        )}
+
+        {uploadedDoc && (
+          <div className="space-y-4">
+            <div className="rounded-lg border border-border bg-[#F7F8FA] dark:bg-muted/20 p-4 space-y-3">
+              <div className="flex items-center justify-between">
+                <h4 className="font-semibold text-xs text-foreground uppercase tracking-wider">
+                  Extracted KYC Attributes
+                </h4>
+                <span className="text-[10px] text-[#1E824C] dark:text-emerald-400 font-mono font-semibold">
+                  OCR Verified
+                </span>
+              </div>
+              {renderFormFields()}
+            </div>
+
+            <div className="flex justify-end gap-2.5 pt-2 border-t border-border">
+              <button onClick={reset} className="btn-secondary text-xs font-semibold px-4 py-2 rounded-lg">
+                Re-upload
+              </button>
+              <button
+                onClick={handleConfirm}
+                disabled={loading}
+                className="btn-primary text-xs font-semibold px-5 py-2 rounded-lg shadow-xs"
+              >
+                {loading ? (
+                  <>
+                    <Loader2 className="size-3.5 animate-spin mr-1.5 inline" /> Saving…
+                  </>
+                ) : (
+                  "Confirm & Save in Ledger"
+                )}
+              </button>
+            </div>
+          </div>
+        )}
+      </div>
+    </div>,
+    document.body,
+  );
+}
